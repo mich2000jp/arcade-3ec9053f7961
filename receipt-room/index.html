@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">
+<title>共有ゲーム</title>
+<style>
+html,body{height:100%;margin:0;background:#213641;color:#edf0eb;font:14px Meiryo,sans-serif}
+#loading{height:100%;display:grid;place-content:center;gap:16px;text-align:center}
+progress{width:220px;height:3px;accent-color:#97c3b5;border:0}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0;visibility:hidden}
+</style>
+</head>
+<body><div id="loading" role="status"><span id="status">読み込み中</span><progress id="progress" max="1"></progress></div>
+<script>
+window.addEventListener('hashchange',()=>location.reload());
+(async()=>{
+  const status=document.getElementById('status'), progress=document.getElementById('progress');
+  const secret=location.hash.slice(1);
+  if(!/^[A-Za-z0-9_-]{43}$/.test(secret)){
+    status.textContent='共有リンクを開いてください。';progress.remove();return;
+  }
+  let stage='download';
+  try{
+    const raw=Uint8Array.from(atob(secret.replace(/-/g,'+').replace(/_/g,'/')+'='),c=>c.charCodeAt(0));
+    const response=await fetch('payload.bin',{cache:'no-cache',credentials:'omit',referrerPolicy:'no-referrer'});
+    if(!response.ok)throw Error('download');
+    const reader=response.body.getReader(),parts=[];
+    const total=Number(response.headers.get('content-length'));let received=0;
+    while(true){const {done,value}=await reader.read();if(done)break;parts.push(value);received+=value.length;if(total)progress.value=received/total;}
+    const bytes=new Uint8Array(received);let cursor=0;for(const part of parts){bytes.set(part,cursor);cursor+=part.length;}
+    status.textContent='開いています';progress.remove();stage='decrypt';
+    const key=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);
+    const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.subarray(0,12)},key,bytes.subarray(12));
+    stage='start';const view=new Uint8Array(plain), decoder=new TextDecoder();
+    const headerSize=new DataView(plain).getUint32(0,true);
+    const entries=JSON.parse(decoder.decode(view.subarray(4,4+headerSize)));
+    const files={},assets={};
+    for(const entry of entries){
+      const data=view.subarray(4+headerSize+entry.offset,4+headerSize+entry.offset+entry.length);
+      if(entry.name.endsWith('.png'))assets[entry.name.split('/').pop()]=URL.createObjectURL(new Blob([data],{type:'image/png'}));
+      else files[entry.name]=decoder.decode(data);
+    }
+    let html=files['index.html'];
+    html=html.replace(/<link rel="stylesheet" href="([^"?]+)(?:\?[^" ]*)?">/g,(_,name)=>'<style>'+files[name].replace(/assets\/art\/([\w-]+)\.png/g,(_,id)=>assets[id+'.png'])+'</style>');
+    html=html.replace(/<script src="([^"?]+)(?:\?[^" ]*)?"><\/script>/g,(_,name)=>'<script>'+files[name]+'<\/script>');
+    html=html.replace('<body>','<body><script>window.ReceiptAssetURLs='+JSON.stringify(assets)+';<\/script>');
+    const frame=document.createElement('iframe');frame.id='game-frame';frame.title='ゲーム';
+    frame.onload=()=>{
+      frame.style.visibility='visible';document.getElementById('loading')?.remove();
+      document.title=frame.contentDocument.title;
+    };
+    frame.srcdoc=html;document.body.append(frame);
+  }catch(error){
+    status.textContent=stage==='decrypt'?'このリンクでは開けません。':stage==='download'?'読み込めませんでした。再読み込みしてください。':'ゲームを開けませんでした。';
+    progress.remove();
+  }
+})();
+</script></body></html>
+
